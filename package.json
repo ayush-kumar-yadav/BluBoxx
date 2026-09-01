@@ -1,0 +1,18 @@
+{
+  "name": "bluboxx",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Collaborative technical interview platform with a custom CRDT sync engine",
+  "workspaces": [
+    "packages/shared",
+    "packages/server",
+    "packages/client"
+  ],
+  "scripts": {
+    "dev:server": "npm run dev -w packages/server",
+    "dev:client": "npm run dev -w packages/client",
+    "build:shared": "npm run build -w packages/shared",
+    "build": "npm run build -w packages/shared && npm run build -w packages/server && npm run build -w packages/client",
+    "test:shared": "npm run test -w packages/shared"
+  }
+}
