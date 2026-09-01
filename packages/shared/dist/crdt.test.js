@@ -1,0 +1,106 @@
+import { describe, it, expect } from 'vitest';
+import { RGA } from './crdt.js';
+/** Helper: collect ops as a replica types out a whole string from empty. */
+function typeString(rga, str) {
+    const ops = [];
+    for (let i = 0; i < str.length; i += 1) {
+        ops.push(rga.localInsert(i, str[i]));
+    }
+    return ops;
+}
+describe('RGA convergence', () => {
+    it('single replica: sequential inserts produce the typed string', () => {
+        const a = new RGA('alice');
+        typeString(a, 'hello');
+        expect(a.toString()).toBe('hello');
+    });
+    it('single replica: delete removes the right character', () => {
+        const a = new RGA('alice');
+        typeString(a, 'hello');
+        const del = a.localDelete(0); // delete 'h'
+        expect(a.toString()).toBe('ello');
+        expect(del.type).toBe('delete');
+    });
+    it('two replicas applying the same ops in different order converge to the same string', () => {
+        const alice = new RGA('alice');
+        const opsA = typeString(alice, 'ac'); // alice types "ac"
+        const bob = new RGA('bob');
+        bob.applyOpLog(opsA); // bob starts from alice's "ac"
+        // Alice inserts 'b' between a and c -> origin is 'a'
+        const insertB = alice.localInsert(1, 'b');
+        // Bob applies it directly
+        bob.applyRemote(insertB);
+        expect(alice.toString()).toBe('abc');
+        expect(bob.toString()).toBe('abc');
+        // Now do it again but deliver to a THIRD replica in reverse/odd order
+        const carol = new RGA('carol');
+        const shuffled = [...opsA].reverse();
+        carol.applyOpLog(shuffled); // out-of-order relative to causal order
+        carol.applyOpLog(shuffled); // duplicate delivery too
+        carol.applyRemote(insertB);
+        carol.applyRemote(insertB); // duplicate delivery of the same op
+        expect(carol.toString()).toBe('abc');
+    });
+    it('concurrent inserts at the same origin resolve identically on all replicas', () => {
+        // Both alice and bob start from "ac" and concurrently insert at the same spot.
+        const base = new RGA('seed');
+        const baseOps = typeString(base, 'ac');
+        const alice = new RGA('alice');
+        alice.applyOpLog(baseOps);
+        const bob = new RGA('bob');
+        bob.applyOpLog(baseOps);
+        // Concurrent: neither has seen the other's op yet.
+        const aliceInsert = alice.localInsert(1, 'X'); // origin = 'a'
+        const bobInsert = bob.localInsert(1, 'Y'); // origin = 'a'
+        // Deliver cross-wise, in OPPOSITE order on each replica.
+        alice.applyRemote(bobInsert);
+        bob.applyRemote(aliceInsert);
+        // Both must agree on final order, whatever the tie-break rule decided.
+        expect(alice.toString()).toBe(bob.toString());
+        expect(alice.toString().length).toBe(4);
+        expect(new Set(alice.toString())).toEqual(new Set('acXY'));
+    });
+    it('delete then receiving a late insert that originated before it still converges', () => {
+        const alice = new RGA('alice');
+        const ops = typeString(alice, 'abc');
+        const [, insertB] = ops; // the op that inserted 'b'
+        const bob = new RGA('bob');
+        // Bob gets 'a' and 'c' first, deletes are irrelevant here - simulate
+        // receiving the delete of 'a' BEFORE the insert of 'b' ever arrives.
+        bob.applyRemote(ops[0]); // insert 'a'
+        bob.applyRemote(ops[2]); // insert 'c' (origin = 'a', so this resolves fine)
+        const deleteA = alice.localDelete(0); // alice deletes 'a' from "abc" -> "bc"
+        bob.applyRemote(deleteA); // bob deletes 'a' too - now "c"
+        // Now the late op finally arrives: insert of 'b', whose origin ('a')
+        // is already deleted (tombstoned) but still present in bob's structure.
+        bob.applyRemote(insertB);
+        expect(bob.toString()).toBe(alice.toString());
+    });
+    it('applying the same op twice (duplicate delivery) is idempotent', () => {
+        const alice = new RGA('alice');
+        const ops = typeString(alice, 'hi');
+        const bob = new RGA('bob');
+        bob.applyOpLog(ops);
+        bob.applyOpLog(ops); // deliver the exact same ops again
+        bob.applyOpLog(ops); // and again
+        expect(bob.toString()).toBe('hi');
+        const del = alice.localDelete(0);
+        bob.applyRemote(del);
+        bob.applyRemote(del); // duplicate delete delivery
+        expect(bob.toString()).toBe('i');
+    });
+    it('out-of-order insert delivery (child arrives before parent) still converges', () => {
+        const alice = new RGA('alice');
+        const opA = alice.localInsert(0, 'a'); // origin null
+        const opB = alice.localInsert(1, 'b'); // origin = a
+        const opC = alice.localInsert(2, 'c'); // origin = b
+        expect(alice.toString()).toBe('abc');
+        const bob = new RGA('bob');
+        // Deliver in reverse: c (depends on b) then b (depends on a) then a.
+        bob.applyRemote(opC);
+        bob.applyRemote(opB);
+        bob.applyRemote(opA);
+        expect(bob.toString()).toBe('abc');
+    });
+});
+//# sourceMappingURL=crdt.test.js.map

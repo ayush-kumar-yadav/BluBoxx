@@ -1,30 +1,27 @@
-import { useEffect, useState } from 'react';
-import { io } from 'socket.io-client';
+import { useCollaborativeEditor } from './collab/useCollaborativeEditor.js';
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL ?? 'http://localhost:4000';
+// TODO (Week 2): real room IDs from the URL / room creation flow, instead
+// of everyone sharing one hardcoded room.
+const DEMO_ROOM_ID = 'demo-room';
 
 export default function App() {
-  const [connected, setConnected] = useState(false);
-
-  useEffect(() => {
-    const socket = io(SERVER_URL);
-    socket.on('connect', () => setConnected(true));
-    socket.on('disconnect', () => setConnected(false));
-    return () => {
-      socket.disconnect();
-    };
-  }, []);
+  const editorRef = useCollaborativeEditor(DEMO_ROOM_ID);
 
   return (
-    <div style={{ fontFamily: 'system-ui', padding: '2rem' }}>
+    <div style={{ fontFamily: 'system-ui', padding: '2rem', maxWidth: 900, margin: '0 auto' }}>
       <h1>BluBoxx</h1>
-      <p>Server connection: {connected ? '✅ connected' : '❌ not connected'}</p>
-      <p>
-        {/* TODO (Week 1): mount CodeMirror here, wire local edits through
-            RGA.localInsert/localDelete, broadcast ops over the socket,
-            apply incoming ops via RGA.applyRemote. */}
-        Editor goes here.
+      <p style={{ color: '#666', marginBottom: '1rem' }}>
+        Open this page in two tabs and type in both - edits should sync live via the CRDT.
       </p>
+      <div
+        ref={editorRef}
+        style={{
+          border: '1px solid #ddd',
+          borderRadius: 6,
+          minHeight: 300,
+          fontSize: 14,
+        }}
+      />
     </div>
   );
 }
