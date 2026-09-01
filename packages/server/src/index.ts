@@ -4,6 +4,7 @@ import cors from 'cors';
 import { createServer } from 'node:http';
 import { Server as SocketIOServer } from 'socket.io';
 import type { CRDTOp, OpMessage } from '@bluboxx/shared';
+import { roomsRouter, resolveRole } from './rooms.js';
 
 const app = express();
 app.use(cors());
@@ -13,19 +14,17 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
 
-// TODO (Week 2): auth routes, room CRUD, question bank routes
-// app.use('/api/auth', authRouter);
-// app.use('/api/rooms', roomsRouter);
+app.use('/api/rooms', roomsRouter);
 
 const httpServer = createServer(app);
 const io = new SocketIOServer(httpServer, {
   cors: { origin: process.env.CLIENT_ORIGIN ?? 'http://localhost:5173' },
 });
 
-// In-memory op-log, keyed by roomId. Fine for local dev / demoing Week 1 -
-// TODO (Week 2): move this to Redis (hot path) with a Mongo write-behind
-// for durability, since an in-memory log doesn't survive a server restart
-// and won't work once there's more than one server instance.
+// In-memory op-log, keyed by roomId.
+// TODO (Week 3): move to Redis (hot path) with a Mongo write-behind for
+// durability - an in-memory log doesn't survive a restart and won't work
+// once there's more than one server instance.
 const roomOpLogs = new Map<string, CRDTOp[]>();
 
 function getOpLog(roomId: string): CRDTOp[] {
@@ -37,26 +36,33 @@ function getOpLog(roomId: string): CRDTOp[] {
   return log;
 }
 
+interface JoinRoomPayload {
+  roomId: string;
+  interviewerToken?: string;
+}
+
 io.on('connection', (socket) => {
-  socket.on('join-room', (roomId: string) => {
+  socket.on('join-room', (payload: JoinRoomPayload) => {
+    const { roomId, interviewerToken } = payload;
     socket.join(roomId);
+
+    const role = resolveRole(roomId, interviewerToken);
+    socket.emit('role', role);
+
     // Replay everything that's happened in this room so far. The client
-    // rebuilds its document from this via RGA.applyOpLog() - this is what
-    // makes joining late, or reconnecting after a drop, converge correctly.
+    // rebuilds its document from this via RGA.applyOpLog().
     socket.emit('op-log', getOpLog(roomId));
   });
 
   socket.on('op', (msg: OpMessage) => {
-    // Persist BEFORE broadcasting. If a client joins in the split second
-    // between these two lines, this ordering guarantees they either see
-    // the op in their op-log replay or receive it live - never both, never
-    // neither.
+    // Persist BEFORE broadcasting - guarantees a client joining in the gap
+    // between these two lines still sees the op, via one path or the other.
     getOpLog(msg.roomId).push(msg.op);
     socket.to(msg.roomId).emit('op', msg);
   });
 
   socket.on('disconnect', () => {
-    // TODO (Week 2): update presence state (who's still connected) per room
+    // TODO (Week 2 cont.): presence - broadcast who's still connected
   });
 });
 

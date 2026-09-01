@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { EditorState, Annotation } from '@codemirror/state';
 import { EditorView, keymap } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
@@ -7,28 +7,25 @@ import { io, Socket } from 'socket.io-client';
 import { RGA } from '@bluboxx/shared';
 import type { CRDTOp, OpMessage } from '@bluboxx/shared';
 import { computeTextDiff } from './textDiff.js';
+import { SERVER_URL } from '../config.js';
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL ?? 'http://localhost:4000';
+export type Role = 'interviewer' | 'candidate' | 'pending';
 
 // Tags a transaction as having been generated FROM a remote CRDT op, so the
-// local-edit listener below can recognize and skip it. Without this, every
-// remote update would get re-encoded as a "local" edit and re-broadcast,
-// causing an infinite echo loop between clients.
+// local-edit listener below can recognize and skip it - prevents the
+// broadcast echo loop described in useCollaborativeEditor's docs.
 const remoteUpdate = Annotation.define<boolean>();
 
-export function useCollaborativeEditor(roomId: string) {
+export function useCollaborativeEditor(roomId: string, interviewerToken: string | null) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const [role, setRole] = useState<Role>('pending');
+  const [connected, setConnected] = useState(false);
 
   useEffect(() => {
     if (!containerRef.current) return;
 
-    // Stable per-session identity for this browser tab. Deliberately NOT
-    // tied to socket.id - a reconnect gets a new socket.id, but ops already
-    // authored under the old id must stay valid, so the CRDT site id needs
-    // to outlive individual socket connections.
     const siteId = crypto.randomUUID();
     const rga = new RGA(siteId);
-
     const socket: Socket = io(SERVER_URL);
 
     const view = new EditorView({
@@ -42,25 +39,14 @@ export function useCollaborativeEditor(roomId: string) {
           EditorView.updateListener.of((update) => {
             if (!update.docChanged) return;
 
-            // Skip: this transaction was us applying a REMOTE op, not the
-            // user typing. Re-processing it here would re-broadcast
-            // someone else's edit back out as if it were our own.
             const isEcho = update.transactions.some((tr) => tr.annotation(remoteUpdate));
             if (isEcho) return;
 
-            // A single keystroke is one change; paste/autocomplete can
-            // produce several. iterChanges gives each sub-range in the
-            // ORIGINAL (pre-transaction) document's coordinates, so we
-            // track a running offset to convert each into the correct
-            // position in the CRDT's current visible text as we go.
             let offset = 0;
             update.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
               const from = fromA + offset;
               const to = toA + offset;
 
-              // Delete the replaced range, one char at a time. Deleting
-              // repeatedly at `from` is correct: each deletion shifts the
-              // next character into that same visible index.
               for (let i = from; i < to; i += 1) {
                 const op = rga.localDelete(from);
                 broadcastOp(op);
@@ -84,9 +70,6 @@ export function useCollaborativeEditor(roomId: string) {
       socket.emit('op', msg);
     }
 
-    // Applies an already-processed RGA state to the editor by diffing
-    // against what's currently on screen, tagging the resulting transaction
-    // so the updateListener above knows to ignore it.
     function syncEditorToRga() {
       const oldText = view.state.doc.toString();
       const newText = rga.toString();
@@ -99,19 +82,23 @@ export function useCollaborativeEditor(roomId: string) {
     }
 
     socket.on('connect', () => {
-      socket.emit('join-room', roomId);
+      setConnected(true);
+      socket.emit('join-room', { roomId, interviewerToken: interviewerToken ?? undefined });
     });
 
-    // Full history replay on join - rebuilds this client's document from
-    // scratch, including anything that happened before it connected.
+    socket.on('disconnect', () => setConnected(false));
+
+    // Server is the source of truth for role - it checked the token
+    // against the room record, the client doesn't self-assign this.
+    socket.on('role', (serverRole: Role) => setRole(serverRole));
+
     socket.on('op-log', (ops: CRDTOp[]) => {
       rga.applyOpLog(ops);
       syncEditorToRga();
     });
 
-    // Live ops from other clients in the room, from this point forward.
     socket.on('op', (msg: OpMessage) => {
-      if (msg.senderSite === siteId) return; // ignore our own echoed broadcast
+      if (msg.senderSite === siteId) return;
       rga.applyRemote(msg.op);
       syncEditorToRga();
     });
@@ -120,7 +107,7 @@ export function useCollaborativeEditor(roomId: string) {
       socket.disconnect();
       view.destroy();
     };
-  }, [roomId]);
+  }, [roomId, interviewerToken]);
 
-  return containerRef;
+  return { containerRef, role, connected };
 }
