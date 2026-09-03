@@ -21,7 +21,7 @@ export default function Room() {
 
   const interviewerToken = roomId ? localStorage.getItem(interviewerTokenKey(roomId)) : null;
 
-  const { containerRef, role, connected, running, runResult, runCode } = useCollaborativeEditor(
+  const { containerRef, role, connected, running, runResult, runCode, notes, updateNotes } = useCollaborativeEditor(
     roomId ?? '',
     interviewerToken,
   );
@@ -50,7 +50,7 @@ export default function Room() {
   const language = roomInfo?.language ?? 'javascript';
 
   return (
-    <div style={{ fontFamily: 'system-ui', padding: '2rem', maxWidth: 900, margin: '0 auto' }}>
+    <div style={{ fontFamily: 'system-ui', padding: '2rem', maxWidth: 1200, margin: '0 auto' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
         <h1 style={{ margin: 0 }}>{roomInfo?.questionTitle ?? 'BluBoxx'}</h1>
         <RoleBadge role={role} />
@@ -82,19 +82,50 @@ export default function Room() {
         </button>
       </div>
 
-      <div
-        ref={containerRef}
+      <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div
+            ref={containerRef}
+            style={{
+              border: '1px solid #ddd',
+              borderRadius: 6,
+              minHeight: 300,
+              fontSize: 14,
+            }}
+          />
+          <OutputPanel running={running} result={runResult} />
+        </div>
+
+        {role === 'interviewer' && (
+          <NotesPanel notes={notes} onChange={updateNotes} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function NotesPanel({ notes, onChange }: { notes: string; onChange: (text: string) => void }) {
+  return (
+    <div style={{ width: 260, flexShrink: 0 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: '#666', marginBottom: '0.4rem' }}>
+        Private notes (only you can see this)
+      </div>
+      <textarea
+        value={notes}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Jot feedback as you go - the candidate never sees this panel or its contents."
         style={{
+          width: '100%',
+          minHeight: 300,
+          padding: '0.6rem',
+          fontSize: 13,
+          fontFamily: 'system-ui',
           border: '1px solid #ddd',
           borderRadius: 6,
-          minHeight: 300,
-          fontSize: 14,
+          resize: 'vertical',
+          boxSizing: 'border-box',
         }}
       />
-
-      <OutputPanel running={running} result={runResult} />
-
-      {/* TODO (Week 2 cont.): interviewer-only private notes panel. */}
     </div>
   );
 }

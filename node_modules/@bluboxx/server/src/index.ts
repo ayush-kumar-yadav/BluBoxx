@@ -37,23 +37,57 @@ function getOpLog(roomId: string): CRDTOp[] {
   return log;
 }
 
+// Interviewer-only notes, keyed by roomId. Never sent to a socket that
+// hasn't been placed in the room's interviewer-only Socket.IO room (see
+// `interviewerRoom` below) - a candidate connection simply never receives
+// this data, not just hides it in the UI.
+const roomNotes = new Map<string, string>();
+
+function interviewerRoom(roomId: string): string {
+  return `${roomId}:interviewer`;
+}
+
 interface JoinRoomPayload {
   roomId: string;
   interviewerToken?: string;
+  siteId: string;
 }
+
 interface RunCodePayload {
   roomId: string;
   code: string;
   language: string;
 }
 
+interface CursorPayload {
+  roomId: string;
+  siteId: string;
+  pos: number;
+  label: string;
+}
+
+interface NotesUpdatePayload {
+  roomId: string;
+  text: string;
+}
+
 io.on('connection', (socket) => {
   socket.on('join-room', (payload: JoinRoomPayload) => {
-    const { roomId, interviewerToken } = payload;
+    const { roomId, interviewerToken, siteId } = payload;
     socket.join(roomId);
+    socket.data.roomId = roomId;
+    socket.data.siteId = siteId;
 
     const role = resolveRole(roomId, interviewerToken);
     socket.emit('role', role);
+
+    if (role === 'interviewer') {
+      // Only interviewer sockets ever join this room - candidates are
+      // never placed here, so `io.to(interviewerRoom(...))` genuinely
+      // cannot reach them, regardless of what the client UI does.
+      socket.join(interviewerRoom(roomId));
+      socket.emit('notes', roomNotes.get(roomId) ?? '');
+    }
 
     // Replay everything that's happened in this room so far. The client
     // rebuilds its document from this via RGA.applyOpLog().
@@ -66,7 +100,25 @@ io.on('connection', (socket) => {
     getOpLog(msg.roomId).push(msg.op);
     socket.to(msg.roomId).emit('op', msg);
   });
-    socket.on('run-code', async (payload: RunCodePayload) => {
+
+  socket.on('cursor', (payload: CursorPayload) => {
+    // Excludes the sender - no reason to echo someone's own cursor back.
+    socket.to(payload.roomId).emit('cursor', payload);
+  });
+
+  socket.on('notes-update', (payload: NotesUpdatePayload) => {
+    // Server-side check, not just a client-side UI restriction: only a
+    // socket that actually joined the interviewer room for this roomId
+    // (i.e. whose token checked out in join-room) can write notes.
+    if (!socket.rooms.has(interviewerRoom(payload.roomId))) return;
+    roomNotes.set(payload.roomId, payload.text);
+    // to() not io.to() - don't echo back to the sender, who already has
+    // the text locally; only reaches OTHER interviewer sockets (e.g. a
+    // panel interview with more than one interviewer in the room).
+    socket.to(interviewerRoom(payload.roomId)).emit('notes', payload.text);
+  });
+
+  socket.on('run-code', async (payload: RunCodePayload) => {
     // Broadcast to the WHOLE room (io.to, not socket.to) - including the
     // sender - so interviewer and candidate see the exact same run at the
     // exact same time, not just whoever clicked Run.
@@ -87,7 +139,11 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    // TODO (Week 2 cont.): presence - broadcast who's still connected
+    const { roomId, siteId } = socket.data as { roomId?: string; siteId?: string };
+    if (roomId && siteId) {
+      // Tell everyone else in the room to remove this cursor.
+      socket.to(roomId).emit('cursor-remove', { siteId });
+    }
   });
 });
 
