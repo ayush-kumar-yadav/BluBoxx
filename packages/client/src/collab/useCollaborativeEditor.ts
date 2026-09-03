@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { EditorState, Annotation } from '@codemirror/state';
 import { EditorView, keymap } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { javascript } from '@codemirror/lang-javascript';
 import { io, Socket } from 'socket.io-client';
 import { RGA } from '@bluboxx/shared';
-import type { CRDTOp, OpMessage } from '@bluboxx/shared';
+import type { CRDTOp, OpMessage, RunResult } from '@bluboxx/shared';
 import { computeTextDiff } from './textDiff.js';
 import { SERVER_URL } from '../config.js';
 
@@ -18,8 +18,13 @@ const remoteUpdate = Annotation.define<boolean>();
 
 export function useCollaborativeEditor(roomId: string, interviewerToken: string | null) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const socketRef = useRef<Socket | null>(null);
+  const viewRef = useRef<EditorView | null>(null);
+
   const [role, setRole] = useState<Role>('pending');
   const [connected, setConnected] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [runResult, setRunResult] = useState<RunResult | null>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -27,6 +32,7 @@ export function useCollaborativeEditor(roomId: string, interviewerToken: string 
     const siteId = crypto.randomUUID();
     const rga = new RGA(siteId);
     const socket: Socket = io(SERVER_URL);
+    socketRef.current = socket;
 
     const view = new EditorView({
       parent: containerRef.current,
@@ -64,6 +70,7 @@ export function useCollaborativeEditor(roomId: string, interviewerToken: string 
         ],
       }),
     });
+    viewRef.current = view;
 
     function broadcastOp(op: CRDTOp) {
       const msg: OpMessage = { roomId, op, senderSite: siteId };
@@ -103,11 +110,39 @@ export function useCollaborativeEditor(roomId: string, interviewerToken: string 
       syncEditorToRga();
     });
 
+    // Both of these are broadcast to the WHOLE room by the server
+    // (io.to, not socket.to) - so every connected client sees the same
+    // run at the same time, not just whoever clicked the button.
+    socket.on('run-started', () => {
+      setRunning(true);
+      setRunResult(null);
+    });
+    socket.on('run-result', (result: RunResult) => {
+      setRunning(false);
+      setRunResult(result);
+    });
+
     return () => {
       socket.disconnect();
       view.destroy();
+      socketRef.current = null;
+      viewRef.current = null;
     };
   }, [roomId, interviewerToken]);
 
-  return { containerRef, role, connected };
+  // Stable function identity - reads current socket/editor state via refs
+  // rather than closing over values from a specific render, since this
+  // gets called imperatively (button click) rather than during render.
+  const runCode = useCallback(
+    (language: string) => {
+      const socket = socketRef.current;
+      const view = viewRef.current;
+      if (!socket || !view) return;
+      const code = view.state.doc.toString();
+      socket.emit('run-code', { roomId, code, language });
+    },
+    [roomId],
+  );
+
+  return { containerRef, role, connected, running, runResult, runCode };
 }

@@ -5,6 +5,7 @@ import { createServer } from 'node:http';
 import { Server as SocketIOServer } from 'socket.io';
 import type { CRDTOp, OpMessage } from '@bluboxx/shared';
 import { roomsRouter, resolveRole } from './rooms.js';
+import { runCode } from './judge0.js';
 
 const app = express();
 app.use(cors());
@@ -40,6 +41,11 @@ interface JoinRoomPayload {
   roomId: string;
   interviewerToken?: string;
 }
+interface RunCodePayload {
+  roomId: string;
+  code: string;
+  language: string;
+}
 
 io.on('connection', (socket) => {
   socket.on('join-room', (payload: JoinRoomPayload) => {
@@ -59,6 +65,25 @@ io.on('connection', (socket) => {
     // between these two lines still sees the op, via one path or the other.
     getOpLog(msg.roomId).push(msg.op);
     socket.to(msg.roomId).emit('op', msg);
+  });
+    socket.on('run-code', async (payload: RunCodePayload) => {
+    // Broadcast to the WHOLE room (io.to, not socket.to) - including the
+    // sender - so interviewer and candidate see the exact same run at the
+    // exact same time, not just whoever clicked Run.
+    io.to(payload.roomId).emit('run-started');
+    try {
+      const result = await runCode(payload.code, payload.language);
+      io.to(payload.roomId).emit('run-result', result);
+    } catch (err) {
+      io.to(payload.roomId).emit('run-result', {
+        stdout: null,
+        stderr: err instanceof Error ? err.message : 'Execution failed',
+        compileOutput: null,
+        statusDescription: 'Error',
+        time: null,
+        memory: null,
+      });
+    }
   });
 
   socket.on('disconnect', () => {

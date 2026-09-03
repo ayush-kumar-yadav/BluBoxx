@@ -36,4 +36,13 @@ export interface OpMessage {
     op: CRDTOp;
     senderSite: string;
 }
+/** Result of a sandboxed code execution, normalized from Judge0's response shape. */
+export interface RunResult {
+    stdout: string | null;
+    stderr: string | null;
+    compileOutput: string | null;
+    statusDescription: string;
+    time: string | null;
+    memory: number | null;
+}
 //# sourceMappingURL=types.d.ts.map

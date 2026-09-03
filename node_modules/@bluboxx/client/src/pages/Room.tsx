@@ -19,11 +19,12 @@ export default function Room() {
   const [roomInfo, setRoomInfo] = useState<RoomInfo | null>(null);
   const [notFound, setNotFound] = useState(false);
 
-  // Only set if THIS browser created the room - proves interviewer status
-  // to the server when joining the socket.
   const interviewerToken = roomId ? localStorage.getItem(interviewerTokenKey(roomId)) : null;
 
-  const { containerRef, role, connected } = useCollaborativeEditor(roomId ?? '', interviewerToken);
+  const { containerRef, role, connected, running, runResult, runCode } = useCollaborativeEditor(
+    roomId ?? '',
+    interviewerToken,
+  );
 
   useEffect(() => {
     if (!roomId) return;
@@ -46,6 +47,7 @@ export default function Room() {
   }
 
   const inviteLink = window.location.href;
+  const language = roomInfo?.language ?? 'javascript';
 
   return (
     <div style={{ fontFamily: 'system-ui', padding: '2rem', maxWidth: 900, margin: '0 auto' }}>
@@ -61,18 +63,23 @@ export default function Room() {
         {role === 'interviewer' && (
           <button
             onClick={() => navigator.clipboard.writeText(inviteLink)}
-            style={{
-              fontSize: 12,
-              padding: '0.3rem 0.6rem',
-              borderRadius: 4,
-              border: '1px solid #ccc',
-              background: '#fff',
-              cursor: 'pointer',
-            }}
+            style={buttonStyle('#fff', '#111', '1px solid #ccc')}
           >
             Copy invite link
           </button>
         )}
+        <button
+          onClick={() => runCode(language)}
+          disabled={running || !connected}
+          style={{
+            ...buttonStyle('#111', '#fff', 'none'),
+            marginLeft: 'auto',
+            opacity: running || !connected ? 0.6 : 1,
+            cursor: running || !connected ? 'default' : 'pointer',
+          }}
+        >
+          {running ? 'Running...' : '▶ Run Code'}
+        </button>
       </div>
 
       <div
@@ -85,10 +92,22 @@ export default function Room() {
         }}
       />
 
-      {/* TODO (Week 2 cont.): Run button + Judge0 output panel here.
-          TODO (Week 2 cont.): interviewer-only private notes panel. */}
+      <OutputPanel running={running} result={runResult} />
+
+      {/* TODO (Week 2 cont.): interviewer-only private notes panel. */}
     </div>
   );
+}
+
+function buttonStyle(background: string, color: string, border: string): React.CSSProperties {
+  return {
+    fontSize: 12,
+    padding: '0.4rem 0.8rem',
+    borderRadius: 4,
+    border,
+    background,
+    color,
+  };
 }
 
 function RoleBadge({ role }: { role: 'interviewer' | 'candidate' | 'pending' }) {
@@ -107,5 +126,45 @@ function RoleBadge({ role }: { role: 'interviewer' | 'candidate' | 'pending' }) 
     >
       {label}
     </span>
+  );
+}
+
+function OutputPanel({
+  running,
+  result,
+}: {
+  running: boolean;
+  result: { stdout: string | null; stderr: string | null; compileOutput: string | null; statusDescription: string } | null;
+}) {
+  if (!running && !result) return null;
+
+  return (
+    <div
+      style={{
+        marginTop: '1rem',
+        border: '1px solid #ddd',
+        borderRadius: 6,
+        background: '#0d1117',
+        color: '#c9d1d9',
+        padding: '0.75rem 1rem',
+        fontFamily: 'ui-monospace, Consolas, monospace',
+        fontSize: 13,
+        whiteSpace: 'pre-wrap',
+        minHeight: 60,
+      }}
+    >
+      {running && <div style={{ color: '#8b949e' }}>Running...</div>}
+      {!running && result && (
+        <>
+          <div style={{ color: '#8b949e', marginBottom: '0.4rem' }}>{result.statusDescription}</div>
+          {result.compileOutput && <div style={{ color: '#f0883e' }}>{result.compileOutput}</div>}
+          {result.stdout && <div>{result.stdout}</div>}
+          {result.stderr && <div style={{ color: '#f85149' }}>{result.stderr}</div>}
+          {!result.stdout && !result.stderr && !result.compileOutput && (
+            <div style={{ color: '#8b949e' }}>(no output)</div>
+          )}
+        </>
+      )}
+    </div>
   );
 }
