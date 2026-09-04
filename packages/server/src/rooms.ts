@@ -1,12 +1,15 @@
 import { Router } from 'express';
 import { randomUUID } from 'node:crypto';
+import { RGA } from '@bluboxx/shared';
+import { getQuestion } from './questions.js';
+import { appendOps } from './opLog.js';
+import type { QuestionDetail } from '@bluboxx/shared';
 
 export interface RoomRecord {
   id: string;
   interviewerToken: string;
   language: string;
-  questionTitle: string;
-  starterCode: string;
+  questionId: string;
   createdAt: number;
 }
 
@@ -34,20 +37,62 @@ export function resolveRole(roomId: string, presentedToken: string | undefined):
   return 'candidate';
 }
 
+/**
+ * Strips a question down to what's safe to send to ANY client (candidate
+ * included): example test cases in full, hidden ones reduced to a count.
+ * This is the only view of question data that ever crosses the wire -
+ * hidden inputs/expected outputs stay server-side, used only when actually
+ * grading a submission (see testHarness.ts, added when test execution is
+ * wired up).
+ */
+function toPublicQuestion(questionId: string): QuestionDetail | null {
+  const question = getQuestion(questionId);
+  if (!question) return null;
+  const examples = question.testCases
+    .filter((tc) => !tc.isHidden)
+    .map((tc) => ({ input: tc.input, expectedOutput: tc.expectedOutput }));
+  const hiddenTestCount = question.testCases.filter((tc) => tc.isHidden).length;
+  return {
+    id: question.id,
+    title: question.title,
+    difficulty: question.difficulty,
+    description: question.description,
+    functionName: question.functionName,
+    starterCode: question.starterCode,
+    examples,
+    hiddenTestCount,
+  };
+}
+
 export const roomsRouter = Router();
 
 roomsRouter.post('/', (req, res) => {
-  const { language = 'javascript', questionTitle = 'Untitled Question', starterCode = '' } = req.body ?? {};
+  const { language = 'javascript', questionId } = req.body ?? {};
+
+  const question = getQuestion(questionId);
+  if (!question) {
+    res.status(400).json({ error: `Unknown questionId: ${questionId}` });
+    return;
+  }
 
   const room: RoomRecord = {
     id: randomUUID(),
     interviewerToken: randomUUID(),
     language,
-    questionTitle,
-    starterCode,
+    questionId: question.id,
     createdAt: Date.now(),
   };
   rooms.set(room.id, room);
+
+  // Seed the op-log with the starter code, done here (once, server-side)
+  // rather than having the first client to join insert it - two clients
+  // joining a brand-new room at nearly the same instant could otherwise
+  // both see an empty op-log and both try to seed it, producing garbled
+  // duplicate text. A 'system' site id keeps this indistinguishable from
+  // any other CRDT-authored content in the op-log.
+  const seedRga = new RGA('system');
+  const seedOps = [...question.starterCode].map((ch, i) => seedRga.localInsert(i, ch));
+  appendOps(room.id, seedOps);
 
   // interviewerToken is only ever returned here, at creation. Anyone who
   // just has the room link (GET below) never sees it.
@@ -63,12 +108,15 @@ roomsRouter.get('/:roomId', (req, res) => {
     res.status(404).json({ error: 'Room not found' });
     return;
   }
-  // Public info only - interviewerToken deliberately omitted.
+  const question = toPublicQuestion(room.questionId);
+  if (!question) {
+    res.status(500).json({ error: 'Room references an unknown question' });
+    return;
+  }
   res.json({
     roomId: room.id,
     language: room.language,
-    questionTitle: room.questionTitle,
-    starterCode: room.starterCode,
+    question,
     createdAt: room.createdAt,
   });
 });

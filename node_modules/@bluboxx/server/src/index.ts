@@ -3,9 +3,11 @@ import express from 'express';
 import cors from 'cors';
 import { createServer } from 'node:http';
 import { Server as SocketIOServer } from 'socket.io';
-import type { CRDTOp, OpMessage } from '@bluboxx/shared';
+import type { OpMessage } from '@bluboxx/shared';
 import { roomsRouter, resolveRole } from './rooms.js';
 import { runCode } from './judge0.js';
+import { listQuestionSummaries } from './questions.js';
+import { getOpLog, appendOps } from './opLog.js';
 
 const app = express();
 app.use(cors());
@@ -13,6 +15,9 @@ app.use(express.json());
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
+});
+app.get('/api/questions', (_req, res) => {
+  res.json(listQuestionSummaries());
 });
 
 app.use('/api/rooms', roomsRouter);
@@ -28,14 +33,6 @@ const io = new SocketIOServer(httpServer, {
 // once there's more than one server instance.
 const roomOpLogs = new Map<string, CRDTOp[]>();
 
-function getOpLog(roomId: string): CRDTOp[] {
-  let log = roomOpLogs.get(roomId);
-  if (!log) {
-    log = [];
-    roomOpLogs.set(roomId, log);
-  }
-  return log;
-}
 
 // Interviewer-only notes, keyed by roomId. Never sent to a socket that
 // hasn't been placed in the room's interviewer-only Socket.IO room (see
@@ -94,10 +91,10 @@ io.on('connection', (socket) => {
     socket.emit('op-log', getOpLog(roomId));
   });
 
-  socket.on('op', (msg: OpMessage) => {
+    socket.on('op', (msg: OpMessage) => {
     // Persist BEFORE broadcasting - guarantees a client joining in the gap
     // between these two lines still sees the op, via one path or the other.
-    getOpLog(msg.roomId).push(msg.op);
+    appendOps(msg.roomId, [msg.op]);
     socket.to(msg.roomId).emit('op', msg);
   });
 

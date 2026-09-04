@@ -57,3 +57,53 @@ export interface RunResult {
   time: string | null;
   memory: number | null;
 }
+export type ParticipantRole = 'interviewer' | 'candidate';
+
+/** Broadcast whenever someone joins or leaves a room, so clients can show
+ * "waiting for candidate" / "candidate disconnected" states. */
+export interface PresenceUpdate {
+  roles: ParticipantRole[];
+}
+
+/**
+ * Result of running a candidate's code against ONE test case. Hidden test
+ * cases deliberately omit input/expectedOutput/actualOutput/error - the
+ * server strips these before sending, so a candidate can never see what a
+ * hidden test actually checks, only whether they passed it. This is
+ * enforced server-side (see server/src/testHarness.ts), not just hidden
+ * in the UI.
+ */
+export interface TestResult {
+  passed: boolean;
+  isHidden: boolean;
+  input?: unknown[];
+  expectedOutput?: unknown;
+  actualOutput?: unknown;
+  error?: string;
+}
+
+export interface TestRunSummary {
+  results: TestResult[];
+  passedCount: number;
+  totalCount: number;
+}
+
+export interface QuestionSummary {
+  id: string;
+  title: string;
+  difficulty: 'Easy' | 'Medium' | 'Hard';
+}
+
+/** Public-facing question data - example test cases only, hidden ones
+ * reduced to just a count. The full test case list (with real inputs and
+ * expected outputs for hidden cases) never leaves the server. */
+export interface QuestionDetail {
+  id: string;
+  title: string;
+  difficulty: 'Easy' | 'Medium' | 'Hard';
+  description: string;
+  functionName: string;
+  starterCode: string;
+  examples: Array<{ input: unknown[]; expectedOutput: unknown }>;
+  hiddenTestCount: number;
+}

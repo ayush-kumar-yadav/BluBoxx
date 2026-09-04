@@ -2,12 +2,12 @@ import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useCollaborativeEditor } from '../collab/useCollaborativeEditor.js';
 import { SERVER_URL } from '../config.js';
+import type { QuestionDetail, RunResult } from '@bluboxx/shared';
 
 interface RoomInfo {
   roomId: string;
   language: string;
-  questionTitle: string;
-  starterCode: string;
+  question: QuestionDetail;
 }
 
 function interviewerTokenKey(roomId: string): string {
@@ -48,11 +48,15 @@ export default function Room() {
 
   const inviteLink = window.location.href;
   const language = roomInfo?.language ?? 'javascript';
+  const question = roomInfo?.question;
 
   return (
     <div style={{ fontFamily: 'system-ui', padding: '2rem', maxWidth: 1200, margin: '0 auto' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-        <h1 style={{ margin: 0 }}>{roomInfo?.questionTitle ?? 'BluBoxx'}</h1>
+        <div>
+          <h1 style={{ margin: 0 }}>{question?.title ?? 'BluBoxx'}</h1>
+          {question && <DifficultyBadge difficulty={question.difficulty} />}
+        </div>
         <RoleBadge role={role} />
       </div>
 
@@ -82,7 +86,9 @@ export default function Room() {
         </button>
       </div>
 
-      <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
+      {question && <QuestionPanel question={question} />}
+
+      <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start', marginTop: '1rem' }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div
             ref={containerRef}
@@ -96,10 +102,37 @@ export default function Room() {
           <OutputPanel running={running} result={runResult} />
         </div>
 
-        {role === 'interviewer' && (
-          <NotesPanel notes={notes} onChange={updateNotes} />
-        )}
+        {role === 'interviewer' && <NotesPanel notes={notes} onChange={updateNotes} />}
       </div>
+    </div>
+  );
+}
+
+function QuestionPanel({ question }: { question: QuestionDetail }) {
+  return (
+    <div
+      style={{
+        border: '1px solid #ddd',
+        borderRadius: 6,
+        padding: '1rem',
+        background: '#fafafa',
+        fontSize: 14,
+        lineHeight: 1.5,
+      }}
+    >
+      <p style={{ margin: '0 0 0.75rem' }}>{question.description}</p>
+      {question.examples.map((ex, i) => (
+        <div key={i} style={{ fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 13, marginBottom: '0.3rem' }}>
+          <strong>Example {i + 1}:</strong> {question.functionName}({ex.input.map((v) => JSON.stringify(v)).join(', ')})
+          {' → '}
+          {JSON.stringify(ex.expectedOutput)}
+        </div>
+      ))}
+      {question.hiddenTestCount > 0 && (
+        <p style={{ margin: '0.5rem 0 0', color: '#888', fontSize: 12 }}>
+          + {question.hiddenTestCount} hidden test case{question.hiddenTestCount === 1 ? '' : 's'}
+        </p>
+      )}
     </div>
   );
 }
@@ -160,13 +193,14 @@ function RoleBadge({ role }: { role: 'interviewer' | 'candidate' | 'pending' }) 
   );
 }
 
-function OutputPanel({
-  running,
-  result,
-}: {
-  running: boolean;
-  result: { stdout: string | null; stderr: string | null; compileOutput: string | null; statusDescription: string } | null;
-}) {
+function DifficultyBadge({ difficulty }: { difficulty: 'Easy' | 'Medium' | 'Hard' }) {
+  const color = difficulty === 'Easy' ? '#2e7d32' : difficulty === 'Medium' ? '#e65100' : '#c62828';
+  return (
+    <span style={{ fontSize: 12, fontWeight: 600, color, marginLeft: '0.5rem' }}>{difficulty}</span>
+  );
+}
+
+function OutputPanel({ running, result }: { running: boolean; result: RunResult | null }) {
   if (!running && !result) return null;
 
   return (

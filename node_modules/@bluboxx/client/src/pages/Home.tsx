@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { SERVER_URL } from '../config.js';
+import type { QuestionSummary } from '@bluboxx/shared';
 
 function interviewerTokenKey(roomId: string): string {
   return `bluboxx:interviewerToken:${roomId}`;
@@ -8,21 +9,34 @@ function interviewerTokenKey(roomId: string): string {
 
 export default function Home() {
   const navigate = useNavigate();
+  const [questions, setQuestions] = useState<QuestionSummary[]>([]);
+  const [selectedId, setSelectedId] = useState<string>('');
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [createError, setCreateError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch(`${SERVER_URL}/api/questions`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`Server responded ${res.status}`);
+        return res.json();
+      })
+      .then((data: QuestionSummary[]) => {
+        setQuestions(data);
+        if (data.length > 0) setSelectedId(data[0].id);
+      })
+      .catch((err) => setLoadError(err instanceof Error ? err.message : 'Failed to load questions'));
+  }, []);
 
   async function handleCreateRoom() {
+    if (!selectedId) return;
     setCreating(true);
-    setError(null);
+    setCreateError(null);
     try {
       const res = await fetch(`${SERVER_URL}/api/rooms`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          language: 'javascript',
-          questionTitle: 'Two Sum',
-          starterCode: 'function twoSum(nums, target) {\n  \n}\n',
-        }),
+        body: JSON.stringify({ language: 'javascript', questionId: selectedId }),
       });
       if (!res.ok) throw new Error(`Server responded ${res.status}`);
       const data = (await res.json()) as { roomId: string; interviewerToken: string };
@@ -33,7 +47,7 @@ export default function Home() {
 
       navigate(`/room/${data.roomId}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create room');
+      setCreateError(err instanceof Error ? err.message : 'Failed to create room');
     } finally {
       setCreating(false);
     }
@@ -43,12 +57,40 @@ export default function Home() {
     <div style={{ fontFamily: 'system-ui', padding: '2rem', maxWidth: 600, margin: '0 auto' }}>
       <h1>BluBoxx</h1>
       <p style={{ color: '#666' }}>
-        Create an interview room, then share the link with your candidate. Whoever creates the
-        room is the interviewer - anyone else who opens the link joins as the candidate.
+        Pick a question, create a room, then share the link with your candidate. Whoever creates
+        the room is the interviewer - anyone else who opens the link joins as the candidate.
       </p>
+
+      {loadError && <p style={{ color: '#c0392b' }}>{loadError}</p>}
+
+      {questions.length > 0 && (
+        <div style={{ margin: '1rem 0' }}>
+          <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: '0.4rem' }}>
+            Question
+          </label>
+          <select
+            value={selectedId}
+            onChange={(e) => setSelectedId(e.target.value)}
+            style={{
+              width: '100%',
+              padding: '0.5rem',
+              fontSize: 14,
+              borderRadius: 6,
+              border: '1px solid #ccc',
+            }}
+          >
+            {questions.map((q) => (
+              <option key={q.id} value={q.id}>
+                {q.title} ({q.difficulty})
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
       <button
         onClick={handleCreateRoom}
-        disabled={creating}
+        disabled={creating || !selectedId}
         style={{
           padding: '0.6rem 1.2rem',
           fontSize: 14,
@@ -56,13 +98,13 @@ export default function Home() {
           border: 'none',
           background: '#111',
           color: '#fff',
-          cursor: creating ? 'default' : 'pointer',
-          opacity: creating ? 0.6 : 1,
+          cursor: creating || !selectedId ? 'default' : 'pointer',
+          opacity: creating || !selectedId ? 0.6 : 1,
         }}
       >
         {creating ? 'Creating...' : 'Create Interview Room'}
       </button>
-      {error && <p style={{ color: '#c0392b', marginTop: '0.75rem' }}>{error}</p>}
+      {createError && <p style={{ color: '#c0392b', marginTop: '0.75rem' }}>{createError}</p>}
     </div>
   );
 }
