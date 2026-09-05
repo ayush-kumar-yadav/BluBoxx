@@ -3,8 +3,8 @@ import express from 'express';
 import cors from 'cors';
 import { createServer } from 'node:http';
 import { Server as SocketIOServer } from 'socket.io';
-import type { OpMessage } from '@bluboxx/shared';
-import { roomsRouter, resolveRole } from './rooms.js';
+import type { CRDTOp, OpMessage } from '@bluboxx/shared';
+import { roomsRouter, resolveRole, getRoom, setRoomLanguage } from './rooms.js';
 import { runCode } from './judge0.js';
 import { listQuestionSummaries } from './questions.js';
 import { getOpLog, appendOps } from './opLog.js';
@@ -68,6 +68,27 @@ interface NotesUpdatePayload {
   text: string;
 }
 
+interface LanguageChangePayload {
+  roomId: string;
+  language: string;
+}
+
+interface PresenceEntry {
+  siteId: string;
+  role: 'interviewer' | 'candidate';
+}
+
+// Who's actually connected to each room right now, keyed by socket.id (a
+// site/browser tab can only ever occupy one socket, so this can't double
+// count a refreshing client the way keying by siteId alone might during
+// the brief overlap of an old socket disconnecting and a new one joining).
+const roomPresence = new Map<string, Map<string, PresenceEntry>>();
+
+function broadcastPresence(roomId: string) {
+  const participants = Array.from(roomPresence.get(roomId)?.values() ?? []);
+  io.to(roomId).emit('presence', participants);
+}
+
 io.on('connection', (socket) => {
   socket.on('join-room', (payload: JoinRoomPayload) => {
     const { roomId, interviewerToken, siteId } = payload;
@@ -77,6 +98,13 @@ io.on('connection', (socket) => {
 
     const role = resolveRole(roomId, interviewerToken);
     socket.emit('role', role);
+
+    // Register this socket in the room's presence map, then tell
+    // EVERYONE currently in the room (including this new socket) the
+    // full up-to-date participant list.
+    if (!roomPresence.has(roomId)) roomPresence.set(roomId, new Map());
+    roomPresence.get(roomId)!.set(socket.id, { siteId, role });
+    broadcastPresence(roomId);
 
     if (role === 'interviewer') {
       // Only interviewer sockets ever join this room - candidates are
@@ -89,6 +117,16 @@ io.on('connection', (socket) => {
     // Replay everything that's happened in this room so far. The client
     // rebuilds its document from this via RGA.applyOpLog().
     socket.emit('op-log', getOpLog(roomId));
+
+    // Tell this socket the room's CURRENT language - not necessarily the
+    // one it was created with, if someone switched it before this client
+    // joined. Every client (interviewer or candidate) reacts to this the
+    // same way, so a mid-interview switch never leaves one side out of
+    // sync with the other's syntax highlighting or Run Code target.
+    const room = getRoom(roomId);
+    if (room) {
+      socket.emit('language', room.language);
+    }
   });
 
     socket.on('op', (msg: OpMessage) => {
@@ -113,6 +151,15 @@ io.on('connection', (socket) => {
     // the text locally; only reaches OTHER interviewer sockets (e.g. a
     // panel interview with more than one interviewer in the room).
     socket.to(interviewerRoom(payload.roomId)).emit('notes', payload.text);
+  });
+
+  socket.on('language-change', (payload: LanguageChangePayload) => {
+    const applied = setRoomLanguage(payload.roomId, payload.language);
+    if (!applied) return; // unknown language id - ignore rather than desync the room
+    // io.to (not socket.to) - both participants' editors re-highlight and
+    // both Run Code buttons switch targets at the same instant, regardless
+    // of who clicked the dropdown.
+    io.to(payload.roomId).emit('language', payload.language);
   });
 
   socket.on('run-code', async (payload: RunCodePayload) => {
@@ -140,6 +187,16 @@ io.on('connection', (socket) => {
     if (roomId && siteId) {
       // Tell everyone else in the room to remove this cursor.
       socket.to(roomId).emit('cursor-remove', { siteId });
+
+      const participants = roomPresence.get(roomId);
+      if (participants) {
+        participants.delete(socket.id);
+        if (participants.size === 0) {
+          roomPresence.delete(roomId);
+        } else {
+          broadcastPresence(roomId);
+        }
+      }
     }
   });
 });

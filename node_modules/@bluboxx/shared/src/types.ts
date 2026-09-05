@@ -57,6 +57,34 @@ export interface RunResult {
   time: string | null;
   memory: number | null;
 }
+/**
+ * Single source of truth for which languages BluBoxx offers, used by both
+ * the room-creation form and the in-room switcher so they can never drift
+ * out of sync with each other. `id` doubles as the Judge0 lookup key in
+ * `server/src/judge0.ts` and the CodeMirror lookup key in
+ * `client/src/collab/useCollaborativeEditor.ts` - adding a language means
+ * adding it to this list AND to both of those maps.
+ */
+export interface LanguageOption {
+  id: string;
+  label: string;
+}
+
+export const SUPPORTED_LANGUAGES: LanguageOption[] = [
+  { id: 'javascript', label: 'JavaScript' },
+  { id: 'typescript', label: 'TypeScript' },
+  { id: 'python', label: 'Python 3' },
+  { id: 'java', label: 'Java' },
+  { id: 'cpp', label: 'C++' },
+  { id: 'c', label: 'C' },
+];
+
+export const DEFAULT_LANGUAGE = 'javascript';
+
+export function isSupportedLanguage(value: string): boolean {
+  return SUPPORTED_LANGUAGES.some((l) => l.id === value);
+}
+
 export type ParticipantRole = 'interviewer' | 'candidate';
 
 /** Broadcast whenever someone joins or leaves a room, so clients can show

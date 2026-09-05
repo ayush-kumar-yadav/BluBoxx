@@ -1,0 +1,65 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * BluBoxx dark theme. All HSL custom properties so Tailwind's
+ * hsl(var(--x)) pattern can compose them with opacity modifiers
+ * (e.g. bg-primary/20) - a plain hex value can't do that.
+ */
+:root {
+  --background: 0 0% 10%;
+  --foreground: 0 0% 96%;
+
+  --primary: 119 99% 46%;
+  --primary-foreground: 0 0% 4%;
+
+  --secondary: 0 0% 18%;
+  --secondary-foreground: 0 0% 96%;
+
+  --muted: 0 0% 16%;
+  --muted-foreground: 0 0% 60%;
+
+  --accent: 119 99% 46%;
+  --accent-foreground: 0 0% 4%;
+
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 4%;
+
+  --border: 0 0% 20%;
+  --input: 0 0% 20%;
+  --ring: 119 99% 46%;
+  --radius: 0.5rem;
+
+  --nav-button: 0 0% 18%;
+  --hero-bg: 0 0% 8%;
+}
+
+* {
+  border-color: hsl(var(--border));
+}
+
+body {
+  @apply bg-hero-bg text-foreground font-sora antialiased;
+}
+
+/* Respect reduced-motion preferences: entrance animations become instant
+   rather than skipped entirely, so content isn't left invisible for users
+   whose OS setting we didn't anticipate. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Subtle collaborative-document backdrop for the Home hero - a fine dot
+   grid rather than a decorative gradient wash, referencing the shared
+   document/canvas BluBoxx is actually about. */
+.bg-doc-grid {
+  background-image: radial-gradient(hsl(var(--foreground) / 0.08) 1px, transparent 1px);
+  background-size: 28px 28px;
+}

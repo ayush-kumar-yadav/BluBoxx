@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { randomUUID } from 'node:crypto';
-import { RGA } from '@bluboxx/shared';
+import { RGA, DEFAULT_LANGUAGE, isSupportedLanguage } from '@bluboxx/shared';
 import { getQuestion } from './questions.js';
 import { appendOps } from './opLog.js';
 import type { QuestionDetail } from '@bluboxx/shared';
@@ -20,6 +20,19 @@ const rooms = new Map<string, RoomRecord>();
 
 export function getRoom(roomId: string): RoomRecord | undefined {
   return rooms.get(roomId);
+}
+
+/**
+ * Updates the room's "current" language when someone switches it mid-session
+ * (see the 'language-change' socket handler in index.ts). This is what a
+ * client joining AFTER a switch sees, not just whatever language the room
+ * was created with.
+ */
+export function setRoomLanguage(roomId: string, language: string): boolean {
+  const room = rooms.get(roomId);
+  if (!room || !isSupportedLanguage(language)) return false;
+  room.language = language;
+  return true;
 }
 
 /**
@@ -67,11 +80,15 @@ function toPublicQuestion(questionId: string): QuestionDetail | null {
 export const roomsRouter = Router();
 
 roomsRouter.post('/', (req, res) => {
-  const { language = 'javascript', questionId } = req.body ?? {};
+  const { language = DEFAULT_LANGUAGE, questionId } = req.body ?? {};
 
   const question = getQuestion(questionId);
   if (!question) {
     res.status(400).json({ error: `Unknown questionId: ${questionId}` });
+    return;
+  }
+  if (!isSupportedLanguage(language)) {
+    res.status(400).json({ error: `Unsupported language: ${language}` });
     return;
   }
 
