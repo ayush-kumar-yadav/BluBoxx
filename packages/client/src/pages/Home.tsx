@@ -1,18 +1,16 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { SERVER_URL } from '../config.js';
 import { SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE } from '@bluboxx/shared';
 import type { QuestionSummary } from '@bluboxx/shared';
+import { useAuth, authHeader } from '../lib/auth.js';
 import { Button } from '../components/ui/button.js';
 import { Skeleton } from '../components/ui/skeleton.js';
 import { cn } from '../lib/utils.js';
 
-function interviewerTokenKey(roomId: string): string {
-  return `bluboxx:interviewerToken:${roomId}`;
-}
-
 export default function Home() {
   const navigate = useNavigate();
+  const { user, token, logout } = useAuth();
   const [questions, setQuestions] = useState<QuestionSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string>('');
   const [selectedLanguage, setSelectedLanguage] = useState<string>(DEFAULT_LANGUAGE);
@@ -48,16 +46,11 @@ export default function Home() {
     try {
       const res = await fetch(`${SERVER_URL}/api/rooms`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeader(token) },
         body: JSON.stringify({ language: selectedLanguage, questionId: selectedId }),
       });
       if (!res.ok) throw new Error(`Server responded ${res.status}`);
-      const data = (await res.json()) as { roomId: string; interviewerToken: string };
-
-      // Only the creator's browser ever stores this - it's what proves
-      // "I'm the interviewer" when this tab later joins the room's socket.
-      localStorage.setItem(interviewerTokenKey(data.roomId), data.interviewerToken);
-
+      const data = (await res.json()) as { roomId: string };
       navigate(`/room/${data.roomId}`);
     } catch (err) {
       setCreateError(err instanceof Error ? err.message : 'Failed to create room');
@@ -77,10 +70,29 @@ export default function Home() {
 
       <header className="relative z-10 flex items-center justify-between px-6 py-6 md:px-12">
         <span className="text-lg font-semibold tracking-tight">BluBoxx</span>
-        <span className="hidden items-center gap-2 rounded-full border border-border bg-secondary/60 px-3 py-1 text-xs text-muted-foreground md:flex">
-          <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-          Custom-built CRDT engine
-        </span>
+        <nav className="flex items-center gap-4">
+          {user ? (
+            <>
+              <Link to="/profile" className="text-sm text-muted-foreground hover:text-foreground">
+                {user.name}
+              </Link>
+              <Button variant="ghost" size="sm" onClick={logout}>
+                Sign out
+              </Button>
+            </>
+          ) : (
+            <>
+              <Link to="/login" className="text-sm text-muted-foreground hover:text-foreground">
+                Log in
+              </Link>
+              <Link to="/signup">
+                <Button variant="navCta" size="sm">
+                  Sign up
+                </Button>
+              </Link>
+            </>
+          )}
+        </nav>
       </header>
 
       <main className="relative z-10 mx-auto flex max-w-5xl flex-col px-6 pb-20 pt-10 md:px-12 md:pt-16">
@@ -102,57 +114,76 @@ export default function Home() {
           className="w-full max-w-md rounded-lg border border-border bg-secondary/40 p-6 opacity-0 animate-fade-up backdrop-blur-sm"
           style={{ animationDelay: '0.4s' }}
         >
-          {loadError && (
-            <div className="mb-4 flex items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2">
-              <p className="text-sm text-destructive">{loadError}</p>
-              <Button variant="outline" size="sm" onClick={fetchQuestions}>
-                Retry
+          {!user ? (
+            <div className="text-center">
+              <p className="mb-4 text-sm text-muted-foreground">Sign in to create an interview room.</p>
+              <Link to="/signup">
+                <Button variant="primary" size="lg" className="w-full uppercase tracking-wide">
+                  Sign up to get started
+                </Button>
+              </Link>
+              <p className="mt-3 text-xs text-muted-foreground">
+                Already have an account?{' '}
+                <Link to="/login" className="text-primary hover:underline">
+                  Log in
+                </Link>
+              </p>
+            </div>
+          ) : (
+            <>
+              {loadError && (
+                <div className="mb-4 flex items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2">
+                  <p className="text-sm text-destructive">{loadError}</p>
+                  <Button variant="outline" size="sm" onClick={fetchQuestions}>
+                    Retry
+                  </Button>
+                </div>
+              )}
+
+              {loadingQuestions && !loadError && (
+                <div className="mb-5 space-y-1.5">
+                  <Skeleton className="h-3 w-16" />
+                  <Skeleton className="h-10 w-full" />
+                </div>
+              )}
+
+              {!loadingQuestions && questions.length > 0 && (
+                <div className="mb-5">
+                  <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Question</label>
+                  <SelectField value={selectedId} onChange={setSelectedId}>
+                    {questions.map((q) => (
+                      <option key={q.id} value={q.id}>
+                        {q.title} ({q.difficulty})
+                      </option>
+                    ))}
+                  </SelectField>
+                </div>
+              )}
+
+              <div className="mb-6">
+                <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Starting language</label>
+                <SelectField value={selectedLanguage} onChange={setSelectedLanguage}>
+                  {SUPPORTED_LANGUAGES.map((lang) => (
+                    <option key={lang.id} value={lang.id}>
+                      {lang.label}
+                    </option>
+                  ))}
+                </SelectField>
+                <p className="mt-1.5 text-xs text-muted-foreground/70">Either side can switch languages later.</p>
+              </div>
+
+              <Button
+                variant="primary"
+                size="lg"
+                className="w-full uppercase tracking-wide"
+                onClick={handleCreateRoom}
+                disabled={creating || !selectedId || loadingQuestions}
+              >
+                {creating ? 'Creating…' : 'Create interview room'}
               </Button>
-            </div>
+              {createError && <p className="mt-3 text-sm text-destructive">{createError}</p>}
+            </>
           )}
-
-          {loadingQuestions && !loadError && (
-            <div className="mb-5 space-y-1.5">
-              <Skeleton className="h-3 w-16" />
-              <Skeleton className="h-10 w-full" />
-            </div>
-          )}
-
-          {!loadingQuestions && questions.length > 0 && (
-            <div className="mb-5">
-              <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Question</label>
-              <SelectField value={selectedId} onChange={setSelectedId}>
-                {questions.map((q) => (
-                  <option key={q.id} value={q.id}>
-                    {q.title} ({q.difficulty})
-                  </option>
-                ))}
-              </SelectField>
-            </div>
-          )}
-
-          <div className="mb-6">
-            <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Starting language</label>
-            <SelectField value={selectedLanguage} onChange={setSelectedLanguage}>
-              {SUPPORTED_LANGUAGES.map((lang) => (
-                <option key={lang.id} value={lang.id}>
-                  {lang.label}
-                </option>
-              ))}
-            </SelectField>
-            <p className="mt-1.5 text-xs text-muted-foreground/70">Either side can switch languages later.</p>
-          </div>
-
-          <Button
-            variant="primary"
-            size="lg"
-            className="w-full uppercase tracking-wide"
-            onClick={handleCreateRoom}
-            disabled={creating || !selectedId || loadingQuestions}
-          >
-            {creating ? 'Creating…' : 'Create interview room'}
-          </Button>
-          {createError && <p className="mt-3 text-sm text-destructive">{createError}</p>}
         </div>
       </main>
     </div>

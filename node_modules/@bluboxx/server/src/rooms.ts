@@ -3,19 +3,24 @@ import { randomUUID } from 'node:crypto';
 import { RGA, DEFAULT_LANGUAGE, isSupportedLanguage } from '@bluboxx/shared';
 import { getQuestion } from './questions.js';
 import { appendOps } from './opLog.js';
+import { requireAuth } from './auth.js';
+import { InterviewRecord } from './models/InterviewRecord.js';
 import type { QuestionDetail } from '@bluboxx/shared';
 
 export interface RoomRecord {
   id: string;
-  interviewerToken: string;
+  interviewerId: string; // Mongo User _id of whoever created the room
   language: string;
   questionId: string;
   createdAt: number;
 }
 
-// In-memory store, keyed by room id.
-// TODO (Week 3): move to MongoDB so rooms survive a server restart and
-// can be listed on an interviewer's "past sessions" dashboard.
+// In-memory store, keyed by room id. Room state itself (op-log, live
+// language, presence) stays in-memory and does NOT survive a restart -
+// only the DURABLE parts (who interviewed whom, the rating) are persisted,
+// via the InterviewRecord created alongside each room below.
+// TODO (Week 3+): move this to Redis so it survives a restart and works
+// across more than one server instance.
 const rooms = new Map<string, RoomRecord>();
 
 export function getRoom(roomId: string): RoomRecord | undefined {
@@ -36,18 +41,31 @@ export function setRoomLanguage(roomId: string, language: string): boolean {
 }
 
 /**
- * Determines a joining socket's role by comparing the token it presents
- * against the room's interviewerToken. The token is handed out ONCE, at
- * creation time, only to the creator - so possessing it is what proves
- * "I'm the interviewer for this room," without needing full user accounts
- * yet. Anyone else with just the room link is a candidate.
+ * Role is now derived from WHO you are (the authenticated user id attached
+ * to the socket by the io.use middleware in index.ts), not a secret token
+ * living in localStorage. Whoever's id matches the room's interviewerId
+ * is the interviewer; any other authenticated user opening the link is a
+ * candidate. This also means "prove you're the interviewer" now survives
+ * clearing browser storage or switching devices, as long as you're logged
+ * into the same account.
  */
-export function resolveRole(roomId: string, presentedToken: string | undefined): 'interviewer' | 'candidate' {
+export function resolveRole(roomId: string, userId: string): 'interviewer' | 'candidate' {
   const room = rooms.get(roomId);
-  if (room && presentedToken && presentedToken === room.interviewerToken) {
+  if (room && room.interviewerId === userId) {
     return 'interviewer';
   }
   return 'candidate';
+}
+
+/**
+ * The first non-interviewer to join a room claims the "candidate" slot on
+ * its InterviewRecord. Later joiners (e.g. an interviewer refreshing, or
+ * someone else opening the link out of curiosity) still get treated as
+ * 'candidate' role for editor/UI purposes, but don't overwrite who's
+ * formally recorded as having taken this interview.
+ */
+export async function claimCandidateIfUnset(roomId: string, userId: string): Promise<void> {
+  await InterviewRecord.updateOne({ roomId, candidate: null }, { $set: { candidate: userId } });
 }
 
 /**
@@ -79,7 +97,7 @@ function toPublicQuestion(questionId: string): QuestionDetail | null {
 
 export const roomsRouter = Router();
 
-roomsRouter.post('/', (req, res) => {
+roomsRouter.post('/', requireAuth, async (req, res) => {
   const { language = DEFAULT_LANGUAGE, questionId } = req.body ?? {};
 
   const question = getQuestion(questionId);
@@ -94,12 +112,24 @@ roomsRouter.post('/', (req, res) => {
 
   const room: RoomRecord = {
     id: randomUUID(),
-    interviewerToken: randomUUID(),
+    interviewerId: req.userId!,
     language,
     questionId: question.id,
     createdAt: Date.now(),
   };
   rooms.set(room.id, room);
+
+  // Durable record of this interview, separate from the in-memory room
+  // above - this is what survives a server restart and what the
+  // interviewer's/candidate's profile page reads from.
+  await InterviewRecord.create({
+    roomId: room.id,
+    interviewer: room.interviewerId,
+    candidate: null,
+    questionId: question.id,
+    questionTitle: question.title,
+    language,
+  });
 
   // Seed the op-log with the starter code, done here (once, server-side)
   // rather than having the first client to join insert it - two clients
@@ -111,15 +141,10 @@ roomsRouter.post('/', (req, res) => {
   const seedOps = [...question.starterCode].map((ch, i) => seedRga.localInsert(i, ch));
   appendOps(room.id, seedOps);
 
-  // interviewerToken is only ever returned here, at creation. Anyone who
-  // just has the room link (GET below) never sees it.
-  res.status(201).json({
-    roomId: room.id,
-    interviewerToken: room.interviewerToken,
-  });
+  res.status(201).json({ roomId: room.id });
 });
 
-roomsRouter.get('/:roomId', (req, res) => {
+roomsRouter.get('/:roomId', requireAuth, (req, res) => {
   const room = rooms.get(req.params.roomId);
   if (!room) {
     res.status(404).json({ error: 'Room not found' });
@@ -135,5 +160,6 @@ roomsRouter.get('/:roomId', (req, res) => {
     language: room.language,
     question,
     createdAt: room.createdAt,
+    isInterviewer: room.interviewerId === req.userId,
   });
 });

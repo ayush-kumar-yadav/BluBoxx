@@ -8,7 +8,7 @@ import { cpp } from '@codemirror/lang-cpp';
 import { java } from '@codemirror/lang-java';
 import { io, Socket } from 'socket.io-client';
 import { RGA, DEFAULT_LANGUAGE } from '@bluboxx/shared';
-import type { CRDTOp, OpMessage, RunResult } from '@bluboxx/shared';
+import type { CRDTOp, OpMessage, RunResult, TestRunSummary } from '@bluboxx/shared';
 import { computeTextDiff } from './textDiff.js';
 import { SERVER_URL } from '../config.js';
 import { colorForSite, cursorsField, removeCursorEffect, setCursorEffect } from './cursorPresence.js';
@@ -20,7 +20,22 @@ export type ConnectionStatus = 'connecting' | 'connected' | 'reconnecting';
 export interface Participant {
   siteId: string;
   role: 'interviewer' | 'candidate';
+  name: string;
 }
+
+export interface TimerState {
+  durationSeconds: number;
+  running: boolean;
+  endsAt: number | null; // epoch ms - present only while running; UI derives the live countdown from this
+  remainingSeconds: number; // authoritative snapshot whenever NOT running
+}
+
+const DEFAULT_TIMER: TimerState = {
+  durationSeconds: 45 * 60,
+  running: false,
+  endsAt: null,
+  remainingSeconds: 45 * 60,
+};
 
 // Tags a transaction as having been generated FROM a remote CRDT op, so the
 // local-edit listener below can recognize and skip it - prevents the
@@ -44,7 +59,7 @@ function languageExtension(language: string): Extension {
   return (LANGUAGE_EXTENSIONS[language] ?? LANGUAGE_EXTENSIONS[DEFAULT_LANGUAGE])();
 }
 
-export function useCollaborativeEditor(roomId: string, interviewerToken: string | null) {
+export function useCollaborativeEditor(roomId: string, token: string | null) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const socketRef = useRef<Socket | null>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -64,18 +79,26 @@ export function useCollaborativeEditor(roomId: string, interviewerToken: string 
   const [docReady, setDocReady] = useState(false);
   const [running, setRunning] = useState(false);
   const [runResult, setRunResult] = useState<RunResult | null>(null);
+  const [runningTests, setRunningTests] = useState(false);
+  const [testSummary, setTestSummary] = useState<TestRunSummary | null>(null);
+  const [testsUnsupportedLanguage, setTestsUnsupportedLanguage] = useState<string | null>(null);
   const [notes, setNotes] = useState('');
   const [language, setLanguage] = useState(DEFAULT_LANGUAGE);
   const [participants, setParticipants] = useState<Participant[]>([]);
+  const [timer, setTimer] = useState<TimerState>(DEFAULT_TIMER);
 
   useEffect(() => {
-    if (!containerRef.current) return;
+    if (!containerRef.current || !token) return;
     setDocReady(false); // reset in case roomId/token changed and this effect re-ran
 
     const siteId = crypto.randomUUID();
     siteIdRef.current = siteId;
     const rga = new RGA(siteId);
-    const socket: Socket = io(SERVER_URL);
+    // Sent as socket.handshake.auth.token - verified server-side by the
+    // io.use middleware in index.ts BEFORE any event handler runs. Role
+    // resolution and presence both derive from that verified identity, not
+    // from anything this payload claims.
+    const socket: Socket = io(SERVER_URL, { auth: { token } });
     socketRef.current = socket;
 
     const view = new EditorView({
@@ -152,7 +175,7 @@ export function useCollaborativeEditor(roomId: string, interviewerToken: string 
       setConnected(true);
       setConnectionStatus('connected');
       hasConnectedOnceRef.current = true;
-      socket.emit('join-room', { roomId, interviewerToken: interviewerToken ?? undefined, siteId });
+      socket.emit('join-room', { roomId, siteId });
     });
 
     socket.on('disconnect', () => {
@@ -207,6 +230,12 @@ export function useCollaborativeEditor(roomId: string, interviewerToken: string 
     // of participants), versus diffing add/remove events client-side.
     socket.on('presence', (list: Participant[]) => setParticipants(list));
 
+    // Authoritative countdown state, pushed on join and after every
+    // interviewer control action. See TimerWidget in Room.tsx for how the
+    // live per-second display is derived from endsAt without needing the
+    // server to tick every second.
+    socket.on('timer', (state: TimerState) => setTimer(state));
+
     // Authoritative language, pushed by the server both on join and
     // whenever anyone switches it (see 'language-change' below). Applies
     // to every socket in the room, so interviewer and candidate always
@@ -229,13 +258,27 @@ export function useCollaborativeEditor(roomId: string, interviewerToken: string 
       setRunResult(result);
     });
 
+    socket.on('tests-started', () => {
+      setRunningTests(true);
+      setTestSummary(null);
+      setTestsUnsupportedLanguage(null);
+    });
+    socket.on('test-results', (summary: TestRunSummary) => {
+      setRunningTests(false);
+      setTestSummary(summary);
+    });
+    socket.on('test-results-unsupported', (payload: { language: string }) => {
+      setRunningTests(false);
+      setTestsUnsupportedLanguage(payload.language);
+    });
+
     return () => {
       socket.disconnect();
       view.destroy();
       socketRef.current = null;
       viewRef.current = null;
     };
-  }, [roomId, interviewerToken]);
+  }, [roomId, token]);
 
   const runCode = useCallback(() => {
     const socket = socketRef.current;
@@ -246,6 +289,14 @@ export function useCollaborativeEditor(roomId: string, interviewerToken: string 
     // guarantees Run Code executes against whatever every participant is
     // currently looking at, even right after a switch.
     socket.emit('run-code', { roomId, code, language: languageRef.current });
+  }, [roomId]);
+
+  const runTests = useCallback(() => {
+    // No code payload needed here, unlike runCode - the server
+    // reconstructs the current document itself from the op-log, so this
+    // always grades the true latest state even if this client's local
+    // view somehow lagged behind (e.g. a slow reconnect).
+    socketRef.current?.emit('run-tests', { roomId });
   }, [roomId]);
 
   const changeLanguage = useCallback(
@@ -275,6 +326,31 @@ export function useCollaborativeEditor(roomId: string, interviewerToken: string 
     [roomId],
   );
 
+  // Timer controls: no optimistic local update here, unlike changeLanguage/
+  // updateNotes - the server is the sole source of truth for endsAt/running,
+  // and the round-trip is fast enough that waiting for its 'timer' echo
+  // avoids ever showing a state the server didn't actually agree to
+  // (e.g. a candidate's stray click having no effect - see server-side
+  // interviewer-only guard on these events in index.ts).
+  const startTimer = useCallback(() => {
+    socketRef.current?.emit('timer-start', { roomId });
+  }, [roomId]);
+
+  const pauseTimer = useCallback(() => {
+    socketRef.current?.emit('timer-pause', { roomId });
+  }, [roomId]);
+
+  const resetTimer = useCallback(() => {
+    socketRef.current?.emit('timer-reset', { roomId });
+  }, [roomId]);
+
+  const setTimerDuration = useCallback(
+    (durationSeconds: number) => {
+      socketRef.current?.emit('timer-set-duration', { roomId, durationSeconds });
+    },
+    [roomId],
+  );
+
   return {
     containerRef,
     role,
@@ -284,11 +360,20 @@ export function useCollaborativeEditor(roomId: string, interviewerToken: string 
     running,
     runResult,
     runCode,
+    runningTests,
+    testSummary,
+    testsUnsupportedLanguage,
+    runTests,
     notes,
     updateNotes,
     language,
     changeLanguage,
     participants,
     mySiteId: siteIdRef.current,
+    timer,
+    startTimer,
+    pauseTimer,
+    resetTimer,
+    setTimerDuration,
   };
 }
