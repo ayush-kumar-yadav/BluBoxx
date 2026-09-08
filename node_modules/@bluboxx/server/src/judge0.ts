@@ -27,19 +27,24 @@ function fromBase64(text: string | null | undefined): string | null {
  * submit-then-poll flow instead, which isn't needed at this project's scope.
  *
  * Defaults to the free public ce.judge0.com instance (no key required,
- * but rate-limited) so this works out of the box. Set JUDGE0_API_URL /
- * JUDGE0_API_KEY in .env to point at a RapidAPI-hosted or self-hosted
- * instance instead once you hit those limits.
+ * but rate-limited) so this works out of the box locally. For production,
+ * set JUDGE0_API_URL to your own instance plus ONE of:
+ *   - JUDGE0_API_KEY: for a RapidAPI-hosted instance (sends X-RapidAPI-Key/Host)
+ *   - JUDGE0_AUTH_TOKEN: for a self-hosted instance with AUTHN_TOKEN set
+ *     (sends X-Auth-Token) - see DEPLOYMENT.md for the VPS setup this pairs with.
  */
 export async function runCode(code: string, language: string, stdin = ''): Promise<RunResult> {
   const languageId = LANGUAGE_IDS[language] ?? LANGUAGE_IDS.javascript;
   const baseUrl = process.env.JUDGE0_API_URL ?? 'https://ce.judge0.com';
-  const apiKey = process.env.JUDGE0_API_KEY;
+  const rapidApiKey = process.env.JUDGE0_API_KEY;
+  const selfHostedToken = process.env.JUDGE0_AUTH_TOKEN;
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (apiKey) {
-    headers['X-RapidAPI-Key'] = apiKey;
+  if (rapidApiKey) {
+    headers['X-RapidAPI-Key'] = rapidApiKey;
     headers['X-RapidAPI-Host'] = new URL(baseUrl).host;
+  } else if (selfHostedToken) {
+    headers['X-Auth-Token'] = selfHostedToken;
   }
 
   const res = await fetch(`${baseUrl}/submissions?base64_encoded=true&wait=true`, {
